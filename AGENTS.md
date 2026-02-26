@@ -146,3 +146,17 @@ langchain-tavily>=0.2.17
 - `TELEGRAM_BOT_TOKEN` — токен Telegram бота
 - `TELEGRAM_CHANNEL_ID` — ID канала для публикации отчётов
 - `TELEGRAM_ADMIN_CHAT_ID` — ID чата для уведомлений админу (опционально)
+
+## Cursor Cloud specific instructions
+
+**Project type:** Pure Python CLI application (no web server, no database, no Docker). Uses `uv` as the sole package manager.
+
+**Running the bot locally:** `uv run python src/lc_money_alert_bot.py` — requires `TAVILY_API_KEY` and an LLM provider key (`OPENAI_API_KEY` or GigaChat credentials). The `TavilySearch` object is instantiated at module load time, so the process will fail immediately without `TAVILY_API_KEY`. Telegram is optional (set `DISABLE_TELEGRAM=1` to skip).
+
+**Gotcha — module-level API key validation:** `src/lc_money_alert_bot.py` cannot be imported or run (even `--help`) without `TAVILY_API_KEY` set, because `TavilySearch()` validates the key at import time (line 64).
+
+**Linting:** No linter is configured in `pyproject.toml`. Use `uvx ruff check src/` for ad-hoc linting. One pre-existing warning exists (unused import in `modal_app.py`).
+
+**Tests:** No test suite exists. Verify correctness by running the core utilities directly (criteria loading, prompt formatting, report generation — see `src/bot_common.py`).
+
+**Criteria files:** `criteria.json` (25 criteria, default), `criteria_small.json` (8 criteria, for testing). Set `CRITERIA_FILE=criteria_small.json` in `.env` for cheaper/faster test runs.
