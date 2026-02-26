@@ -1,11 +1,12 @@
 """
 LangChain агент для макро-оценки экономики РФ (6 месяцев).
-Поддерживает провайдеры: GigaChat, OpenAI.
+Поддерживает провайдеры: GigaChat, OpenAI, Gemini.
 
 Запуск:
-  uv run python src/lc_money_alert_bot.py                    # GigaChat (по умолчанию)
+  uv run python src/lc_money_alert_bot.py                    # OpenAI (по умолчанию)
   uv run python src/lc_money_alert_bot.py --provider openai  # OpenAI (gpt-5.2)
   uv run python src/lc_money_alert_bot.py --provider gigachat # GigaChat (явно)
+  uv run python src/lc_money_alert_bot.py --provider gemini  # Gemini (gemini-3.1-pro-preview)
 """
 
 import argparse
@@ -22,6 +23,7 @@ from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_gigachat import GigaChat
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langchain_tavily import TavilySearch
 from langgraph.checkpoint.memory import InMemorySaver
@@ -221,11 +223,23 @@ def _init_openai() -> ChatOpenAI:
     return ChatOpenAI(**kwargs)
 
 
+def _init_gemini() -> ChatGoogleGenerativeAI:
+    """Инициализирует модель Gemini из переменных окружения."""
+    model_name = os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
+
+    return ChatGoogleGenerativeAI(
+        model=model_name,
+        temperature=0,
+        max_output_tokens=8192,
+    )
+
+
 def _init_model(provider: str):
     """Создаёт LLM по имени провайдера."""
     factories = {
         "gigachat": _init_gigachat,
         "openai": _init_openai,
+        "gemini": _init_gemini,
     }
     factory = factories.get(provider)
     if factory is None:
@@ -245,10 +259,15 @@ def _estimate_cost(
         "openai": {"input": 2.50, "output": 20.00},  # gpt-5.3 (оценка по тренду 5.1→5.2)
         "openai:gpt-5.2": {"input": 1.75, "output": 14.00},
         "openai:gpt-5.1": {"input": 1.25, "output": 10.00},
+        "gemini": {"input": 2.00, "output": 12.00},  # gemini-3.1-pro-preview (<200K ctx)
         # GigaChat — отдельная модель тарификации, считаем 0
     }
     # Сначала пробуем точный ключ "provider:model", потом просто "provider"
-    model_name = os.getenv("OPENAI_MODEL", "") if provider == "openai" else ""
+    model_env_map = {
+        "openai": "OPENAI_MODEL",
+        "gemini": "GEMINI_MODEL",
+    }
+    model_name = os.getenv(model_env_map.get(provider, ""), "")
     r = rates_per_million.get(f"{provider}:{model_name}") or rates_per_million.get(provider)
     if not r:
         return 0.0
@@ -400,6 +419,7 @@ async def run_agent(
     provider_labels = {
         "gigachat": "GigaChat",
         "openai": "OpenAI",
+        "gemini": "Gemini",
     }
     provider_label = provider_labels.get(provider, provider)
 
@@ -446,6 +466,9 @@ async def run_agent(
         base_url = os.getenv("OPENAI_BASE_URL")
         if base_url:
             log(f"🔗 Base URL: {base_url}")
+    elif provider == "gemini":
+        model_display = os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
+        log(f"🤖 Модель: {model_display} (Gemini)")
     else:
         log(f"🤖 Провайдер: {provider}")
 
@@ -825,13 +848,13 @@ async def main():
     )
     parser.add_argument(
         "--provider",
-        choices=["gigachat", "openai"],
+        choices=["gigachat", "openai", "gemini"],
         default=os.getenv("MODEL_PROVIDER", "openai"),
-        help="Провайдер LLM (по умолчанию: gigachat, или из MODEL_PROVIDER)",
+        help="Провайдер LLM (по умолчанию: openai, или из MODEL_PROVIDER)",
     )
     args = parser.parse_args()
 
-    provider_labels = {"gigachat": "GigaChat", "openai": "OpenAI"}
+    provider_labels = {"gigachat": "GigaChat", "openai": "OpenAI", "gemini": "Gemini"}
     provider_label = provider_labels.get(args.provider, args.provider)
 
     with Logger() as logger:
