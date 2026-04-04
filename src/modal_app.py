@@ -94,7 +94,7 @@ async def run_periodic_check():
 
     with Logger() as logger:
         result = await run_agent(criteria_file, logger)
-        report = format_telegram_report(result, result["stats"])
+        report = format_telegram_report(result, result["stats"], result.get("archive_text", ""))
         
         if result and result.get("result"):
             score = result["result"].get("total_score", 0)

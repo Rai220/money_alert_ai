@@ -816,6 +816,7 @@ async def run_agent(
 
     return {
         "result": final_result,
+        "archive_text": archive_text if archive_count > 0 else "",
         "stats": {
             "steps": step_count,
             "tool_calls": tool_calls_count,
@@ -903,7 +904,7 @@ async def main():
             return None
 
         logger.log("")
-        report = format_telegram_report(result, result["stats"])
+        report = format_telegram_report(result, result["stats"], result.get("archive_text", ""))
 
         if result and result.get("result"):
             score = result["result"].get("total_score", 0)

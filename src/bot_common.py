@@ -180,7 +180,25 @@ def _truncate_field(text: str, max_chars: int) -> str:
     return text[: max_chars - 1] + "…"
 
 
-def format_telegram_report(result: dict, stats: dict) -> str:
+def _is_similar_to_archive(item: str, archive_text: str, threshold: float = 0.55) -> bool:
+    """Проверяет, есть ли похожий текст в архиве канала (по пересечению слов)."""
+    if not archive_text or not item:
+        return False
+    item_words = set(re.findall(r"[а-яёa-z]{3,}", item.lower()))
+    if len(item_words) < 3:
+        return False
+    # Проверяем каждый пост архива (разделены ---)
+    for post in archive_text.split("---"):
+        post_words = set(re.findall(r"[а-яёa-z]{3,}", post.lower()))
+        if not post_words:
+            continue
+        overlap = len(item_words & post_words) / len(item_words)
+        if overlap >= threshold:
+            return True
+    return False
+
+
+def format_telegram_report(result: dict, stats: dict, archive_text: str = "") -> str:
     """Форматирует отчёт для отправки в Telegram (HTML-формат с кликабельными ссылками).
 
     Гарантирует, что итоговое сообщение ≤ TELEGRAM_MSG_LIMIT (4096).
@@ -241,19 +259,20 @@ def format_telegram_report(result: dict, stats: dict) -> str:
         lines.append("")
 
         triggered = final_result.get("triggered_criteria", [])
-        # Placeholder for the blockquote — will be filled / trimmed later
-        _BQ_PLACEHOLDER = "%%TRIGGERED_BLOCKQUOTE%%"
         if triggered:
             lines.append("⚠️ Сработавшие критерии:")
-            bq_items: list[str] = []
-            for t in triggered:
+            bq_lines: list[str] = []
+            for t in triggered[:5]:
                 crit_id = html.escape(str(t.get("id", "?")))
-                evidence = _truncate_field(t.get("evidence", "") or "", 130)
-                bq_items.append(f"• {crit_id}: {_linkify(evidence)}")
-            lines.append(_BQ_PLACEHOLDER)
+                evidence = _truncate_field(t.get("evidence", "") or "", 120)
+                bq_lines.append(f"• {crit_id}: {_linkify(evidence)}")
+            if len(triggered) > 5:
+                bq_lines.append(f"… и ещё {len(triggered) - 5}")
+            bq_content = "\n".join(bq_lines)
+            bq_content = _sanitize_truncated_html(bq_content)
+            lines.append(f"<blockquote expandable>{bq_content}</blockquote>")
             lines.append("")
         else:
-            bq_items = []
             lines.append("✅ Сработавших критериев нет")
 
         summary = _truncate_field(final_result.get("summary", "Нет данных"), 230)
@@ -262,6 +281,11 @@ def format_telegram_report(result: dict, stats: dict) -> str:
         lines.append(f"💡 Рекомендация: {_linkify(recommendation)}")
 
         asset_guidance = final_result.get("asset_guidance", []) or []
+        if asset_guidance and archive_text:
+            asset_guidance = [
+                item for item in asset_guidance
+                if not _is_similar_to_archive(item, archive_text)
+            ]
         if asset_guidance:
             lines.append("")
             lines.append("💼 Активы:")
@@ -303,8 +327,6 @@ def format_telegram_report(result: dict, stats: dict) -> str:
                 lines.append(f"  • {html.escape(_truncate_field(text, 120))}")
 
     else:
-        bq_items = []
-        _BQ_PLACEHOLDER = "%%TRIGGERED_BLOCKQUOTE%%"
         lines.append("⚠️ Не удалось получить результат от агента")
 
     model = stats.get("model")
@@ -323,44 +345,14 @@ def format_telegram_report(result: dict, stats: dict) -> str:
         ]
     )
 
-    # ── Подгоняем под лимит Telegram, подрезая blockquote ──
+    # ── Подгоняем под лимит Telegram ──
     report = "\n".join(lines)
 
-    if _BQ_PLACEHOLDER not in report or not bq_items:
-        # Нет блока с критериями — просто убираем плейсхолдер
-        return report.replace(_BQ_PLACEHOLDER, "")
+    if len(report) > TELEGRAM_MSG_LIMIT:
+        # Обрезаем до лимита, сохраняя корректный HTML
+        report = _sanitize_truncated_html(report[: TELEGRAM_MSG_LIMIT - 4]) + "\n…"
 
-    bq_wrap_len = len("<blockquote expandable>") + len("</blockquote>")
-    shell_len = len(report) - len(_BQ_PLACEHOLDER) + bq_wrap_len
-
-    available = TELEGRAM_MSG_LIMIT - shell_len - 10  # запас 10 символов
-    if available < 0:
-        available = 0
-
-    # Набираем столько пунктов, сколько влезет
-    fitted: list[str] = []
-    used = 0
-    for item in bq_items:
-        # +1 за символ '\n' между пунктами
-        cost = len(item) + (1 if fitted else 0)
-        if used + cost <= available:
-            fitted.append(item)
-            used += cost
-        else:
-            # Пытаемся добавить обрезанный пункт
-            remaining = available - used - (1 if fitted else 0)
-            if remaining > 30:
-                fitted.append(
-                    _sanitize_truncated_html(item[: remaining - 1]) + "…"
-                )
-            break
-
-    if fitted:
-        bq_html = f"<blockquote expandable>{chr(10).join(fitted)}</blockquote>"
-    else:
-        bq_html = ""
-
-    return report.replace(_BQ_PLACEHOLDER, bq_html)
+    return report
 
 
 def _split_message(text: str, limit: int = TELEGRAM_MSG_LIMIT) -> list[str]:
@@ -741,14 +733,31 @@ WebFetch: https://t.me/s/money_alert_ai
 }}
 ```
 
-## 🧾 ПРАКТИЧЕСКАЯ ЧАСТЬ ПРО АКТИВЫ (ОБЯЗАТЕЛЬНО!)
-
-Ты ОБЯЗАН дать практическую секцию по активам, но аккуратно и без паники:
+## 🧾 ПРАКТИЧЕСКАЯ ЧАСТЬ ПРО АКТИВЫ
 
 - Выведи `deposit_access_risk` (green/yellow/red) — риск ухудшения доступа к вкладам/платежам на горизонте 1–3 месяца
-- Заполни `asset_guidance` (3 пункта): вклады/ликвидность/диверсификация, валютные и операционные риски, недвижимость/риски отрасли
-- НЕ давай категоричных приказов "покупай/продавай". Используй: "имеет смысл рассмотреть", "если ваша цель — снизить риск...", "можно подумать о..."
-- Если считаешь, что "лучшее действие — ничего не делать" — так и напиши ("не паниковать/без экстренных действий"), но с одним конкретным чеклист‑пунктом (например: держать вклады в пределах АСВ, резерв ликвидности на расходы 2–4 недели).
+
+### 🚫 ПРАВИЛО ДЕДУПЛИКАЦИИ `asset_guidance` (КРИТИЧНО!)
+
+Перед заполнением `asset_guidance` ты ОБЯЗАН сверить свои рекомендации с архивом канала.
+
+**Если твои рекомендации по сути повторяют то, что уже было в предыдущих постах — верни ПУСТОЙ СПИСОК `[]`.**
+
+Типовые советы, которые уже давались десятки раз и НЕ ДОЛЖНЫ повторяться:
+- "держать вклады в пределах АСВ / 1,4 млн руб."
+- "диверсифицировать по нескольким банкам"
+- "не паниковать / без экстренных действий"
+- "резерв ликвидности на 2-4 недели"
+- "предпочтение банкам с госучастием"
+- "рассмотреть короткие вклады"
+- общие фразы про "мониторить ситуацию"
+
+**Заполняй `asset_guidance` ТОЛЬКО если:**
+1. Ситуация РЕАЛЬНО ИЗМЕНИЛАСЬ и требует НОВЫХ действий, отличных от предыдущих постов
+2. Появился конкретный новый риск/возможность, требующий конкретного действия
+3. Рекомендация содержит КОНКРЕТИКУ (цифры, сроки, инструменты), которой раньше не было
+
+Если ничего нового — `"asset_guidance": []`. Это нормально и предпочтительно.
 
 ### Контекст: топ-10 банков и логика "too big to fail"
 
